@@ -2,10 +2,34 @@ provider "aws" {
   region = "us-west-2"
 }
 
-data "aws_region" "current" {}
-data "aws_caller_identity" "current" {}
-data "aws_iot_endpoint" "current" {
-  endpoint_type = "iot:Data-ATS"
+# --------------------------------------------------------- 
+# Module 2 - Backend APIs
+# ---------------------------------------------------------
+
+resource "aws_dynamodb_table" "votes_table" {
+  name         = "${var.app_name}-vote-result"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
+
+  tags = {
+    Terraform   = "true"
+    Environment = "dev"
+    Application = var.app_name
+  }
 }
 
 module "get-votes" {
@@ -14,7 +38,7 @@ module "get-votes" {
   function_name   = "${var.app_name}-get-votes"
   description     = "get votes"
   handler         = "index.handler"
-  runtime         = "nodejs14.x"
+  runtime         = "nodejs16.x"
   memory_size     = 256
   build_in_docker = true
 
@@ -56,7 +80,7 @@ module "post-votes" {
   function_name   = "${var.app_name}-post-votes"
   description     = "post votes"
   handler         = "index.handler"
-  runtime         = "nodejs14.x"
+  runtime         = "nodejs16.x"
   memory_size     = 256
   build_in_docker = true
 
@@ -116,22 +140,27 @@ module "api_gateway" {
       payload_format_version = "2.0"
     }
 
+    "POST /votes" = {
+      lambda_arn = module.post-votes.lambda_function_arn
+      payload_format_version = "2.0"
+    }
+
+    # ---------------------------------------------------------
+    # Module 3 - Async Writes
+    # ---------------------------------------------------------
+
     # "POST /votes" = {
-    #   lambda_arn = module.post-votes.lambda_function_arn
-    #   payload_format_version = "2.0"
+    #   description         = "integrate with Vote SQS queue"
+    #   integration_type    = "AWS_PROXY"
+    #   integration_subtype = "SQS-SendMessage"
+    #   credentials_arn     = aws_iam_role.apigw_sqs_role.arn
+
+    #   request_parameters = jsonencode({
+    #     "QueueUrl"    = module.votes_queue.sqs_queue_id
+    #     "MessageBody" = "$request.body"
+    #   })
     # }
 
-    "POST /votes" = {
-      description         = "integrate with Vote SQS queue"
-      integration_type    = "AWS_PROXY"
-      integration_subtype = "SQS-SendMessage"
-      credentials_arn     = aws_iam_role.apigw_sqs_role.arn
-
-      request_parameters = jsonencode({
-        "QueueUrl"    = module.votes_queue.sqs_queue_id
-        "MessageBody" = "$request.body"
-      })
-    }
   }
 
   tags = {
@@ -141,6 +170,10 @@ module "api_gateway" {
   }
 
 }
+
+# --------------------------------------------------------- 
+# Module 3 - Aync Writes
+# ---------------------------------------------------------
 
 resource "aws_iam_role" "apigw_sqs_role" {
   name = "${var.app_name}-apigw_sqs_role"
@@ -183,32 +216,6 @@ resource "aws_iam_role" "apigw_sqs_role" {
   }
 }
 
-resource "aws_dynamodb_table" "votes_table" {
-  name         = "${var.app_name}-vote-result"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "PK"
-  range_key    = "SK"
-
-  attribute {
-    name = "PK"
-    type = "S"
-  }
-
-  attribute {
-    name = "SK"
-    type = "S"
-  }
-
-  stream_enabled   = true
-  stream_view_type = "NEW_AND_OLD_IMAGES"
-
-  tags = {
-    Terraform   = "true"
-    Environment = "dev"
-    Application = var.app_name
-  }
-}
-
 module "votes_queue" {
   source = "terraform-aws-modules/sqs/aws"
 
@@ -226,7 +233,7 @@ module "count-votes" {
   function_name   = "${var.app_name}-count-votes"
   description     = "batch couting function"
   handler         = "index.handler"
-  runtime         = "nodejs14.x"
+  runtime         = "nodejs16.x"
   memory_size     = 256
   build_in_docker = true
 
@@ -241,7 +248,7 @@ module "count-votes" {
     sqs = {
       event_source_arn                   = module.votes_queue.sqs_queue_arn
       batch_size                         = 1000
-      maximum_batching_window_in_seconds = 60
+      maximum_batching_window_in_seconds = 1
     }
   }
 
@@ -284,13 +291,23 @@ module "count-votes" {
   }
 }
 
+# ---------------------------------------------------------
+# Module 4 - Realtime Updates
+# ---------------------------------------------------------
+
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+data "aws_iot_endpoint" "current" {
+  endpoint_type = "iot:Data-ATS"
+}
+
 module "realtime-update" {
   source = "terraform-aws-modules/lambda/aws"
 
   function_name   = "${var.app_name}-realtime-update"
   description     = "realtime update function"
   handler         = "index.handler"
-  runtime         = "nodejs14.x"
+  runtime         = "nodejs16.x"
   memory_size     = 256
   build_in_docker = true
 
